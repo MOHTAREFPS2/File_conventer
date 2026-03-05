@@ -1,11 +1,12 @@
 import os
 import subprocess
-import shutil  # تم إضافة المكتبة الناقصة
-import uuid    # لإضافة معرف فريد للملفات
+import shutil
+import uuid
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.environ.get("8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0")
+# تم تعديل التوكن ليصبح قيمة ثابتة بداخل الكود
+TOKEN = "8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"
 
 DOWNLOAD_DIR = "downloads"
 OUTPUT_DIR = "output"
@@ -42,7 +43,6 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     name = doc.file_name
     
-    # التحقق من وجود امتداد للملف وتجنب الأخطاء
     if "." not in name:
         await update.message.reply_text("❌ لم يتم التعرف على صيغة الملف.")
         return
@@ -57,21 +57,18 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file = await doc.get_file()
     
-    # إنشاء اسم فريد لتجنب التداخل بين المستخدمين
     unique_id = str(uuid.uuid4().hex)[:8]
     unique_name = f"{unique_id}_{name}"
     input_path = os.path.join(DOWNLOAD_DIR, unique_name)
     
     await file.download_to_drive(input_path)
 
-    # التحقق من وجود LibreOffice
     if not shutil.which("soffice"):
         await update.message.reply_text("❌ خطأ: LibreOffice غير مثبت على السيرفر.")
         return
 
     await update.message.reply_text("⚙️ جاري تحويل الملف إلى PDF...")
 
-    # تشغيل التحويل
     result = subprocess.run([
         "soffice",
         "--headless",
@@ -84,18 +81,15 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ فشل التحويل.\nخطأ LibreOffice:\n{result.stderr}")
         return
 
-    # استنتاج اسم ملف PDF بناءً على الاسم الفريد
     pdf_name = unique_name.rsplit(".", 1)[0] + ".pdf"
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
 
     if os.path.exists(pdf_path):
         await update.message.reply_text("📤 تم التحويل بنجاح. جاري الإرسال...")
-        # إرسال المسار مباشرة بدلاً من دالة open لتفادي تسريب الذاكرة (Memory Leak)
         await update.message.reply_document(document=pdf_path)
     else:
         await update.message.reply_text("❌ حدث خطأ أثناء إنشاء ملف PDF.")
 
-    # تنظيف الملفات المؤقتة
     if os.path.exists(input_path):
         os.remove(input_path)
     if os.path.exists(pdf_path):
