@@ -1,9 +1,11 @@
 import os
 import subprocess
+import shutil  # تم إضافة المكتبة الناقصة
+import uuid    # لإضافة معرف فريد للملفات
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN ="8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"  # ضع توكن البوت في Environment Variable
+TOKEN = os.environ.get("8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0")
 
 DOWNLOAD_DIR = "downloads"
 OUTPUT_DIR = "output"
@@ -11,7 +13,7 @@ OUTPUT_DIR = "output"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-ALLOWED = ["ppt","pptx","doc","docx","xls","xlsx","odt","odp"]
+ALLOWED = ["ppt", "pptx", "doc", "docx", "xls", "xlsx", "odt", "odp"]
 
 WELCOME = """
 📄 مرحباً بك في بوت تحويل الملفات إلى PDF
@@ -37,9 +39,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP)
 
 async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     doc = update.message.document
     name = doc.file_name
+    
+    # التحقق من وجود امتداد للملف وتجنب الأخطاء
+    if "." not in name:
+        await update.message.reply_text("❌ لم يتم التعرف على صيغة الملف.")
+        return
+        
     ext = name.split(".")[-1].lower()
 
     if ext not in ALLOWED:
@@ -49,22 +56,27 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ جاري تحميل الملف...")
 
     file = await doc.get_file()
-    input_path = os.path.join(DOWNLOAD_DIR, name)
+    
+    # إنشاء اسم فريد لتجنب التداخل بين المستخدمين
+    unique_id = str(uuid.uuid4().hex)[:8]
+    unique_name = f"{unique_id}_{name}"
+    input_path = os.path.join(DOWNLOAD_DIR, unique_name)
+    
     await file.download_to_drive(input_path)
 
-    # تحقق من وجود LibreOffice
+    # التحقق من وجود LibreOffice
     if not shutil.which("soffice"):
         await update.message.reply_text("❌ خطأ: LibreOffice غير مثبت على السيرفر.")
         return
 
     await update.message.reply_text("⚙️ جاري تحويل الملف إلى PDF...")
 
-    # تشغيل التحويل مع تسجيل الأخطاء
+    # تشغيل التحويل
     result = subprocess.run([
         "soffice",
         "--headless",
-        "--convert-to","pdf",
-        "--outdir",OUTPUT_DIR,
+        "--convert-to", "pdf",
+        "--outdir", OUTPUT_DIR,
         input_path
     ], capture_output=True, text=True)
 
@@ -72,26 +84,29 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ فشل التحويل.\nخطأ LibreOffice:\n{result.stderr}")
         return
 
-    pdf_name = name.rsplit(".",1)[0] + ".pdf"
+    # استنتاج اسم ملف PDF بناءً على الاسم الفريد
+    pdf_name = unique_name.rsplit(".", 1)[0] + ".pdf"
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
 
     if os.path.exists(pdf_path):
         await update.message.reply_text("📤 تم التحويل بنجاح. جاري الإرسال...")
-        await update.message.reply_document(open(pdf_path,"rb"))
+        # إرسال المسار مباشرة بدلاً من دالة open لتفادي تسريب الذاكرة (Memory Leak)
+        await update.message.reply_document(document=pdf_path)
     else:
         await update.message.reply_text("❌ حدث خطأ أثناء إنشاء ملف PDF.")
 
-    # تنظيف الملفات
+    # تنظيف الملفات المؤقتة
     if os.path.exists(input_path):
         os.remove(input_path)
     if os.path.exists(pdf_path):
         os.remove(pdf_path)
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("help", help_cmd))
-app.add_handler(MessageHandler(filters.Document.ALL, convert))
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(MessageHandler(filters.Document.ALL, convert))
 
-print("BOT STARTED")
-app.run_polling()
-
+    print("BOT STARTED")
+    app.run_polling()
+    
