@@ -3,7 +3,7 @@ import subprocess
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN ="8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"  # ضع توكن البوت في Environment Variable
+TOKEN = os.environ.get("8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0")  # ضع توكن البوت في Environment Variable
 
 DOWNLOAD_DIR = "downloads"
 OUTPUT_DIR = "output"
@@ -52,15 +52,25 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     input_path = os.path.join(DOWNLOAD_DIR, name)
     await file.download_to_drive(input_path)
 
+    # تحقق من وجود LibreOffice
+    if not shutil.which("soffice"):
+        await update.message.reply_text("❌ خطأ: LibreOffice غير مثبت على السيرفر.")
+        return
+
     await update.message.reply_text("⚙️ جاري تحويل الملف إلى PDF...")
 
-    subprocess.run([
+    # تشغيل التحويل مع تسجيل الأخطاء
+    result = subprocess.run([
         "soffice",
         "--headless",
         "--convert-to","pdf",
         "--outdir",OUTPUT_DIR,
         input_path
-    ])
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0:
+        await update.message.reply_text(f"❌ فشل التحويل.\nخطأ LibreOffice:\n{result.stderr}")
+        return
 
     pdf_name = name.rsplit(".",1)[0] + ".pdf"
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
@@ -68,10 +78,14 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if os.path.exists(pdf_path):
         await update.message.reply_text("📤 تم التحويل بنجاح. جاري الإرسال...")
         await update.message.reply_document(open(pdf_path,"rb"))
-        os.remove(input_path)
-        os.remove(pdf_path)
     else:
-        await update.message.reply_text("❌ حدث خطأ أثناء التحويل")
+        await update.message.reply_text("❌ حدث خطأ أثناء إنشاء ملف PDF.")
+
+    # تنظيف الملفات
+    if os.path.exists(input_path):
+        os.remove(input_path)
+    if os.path.exists(pdf_path):
+        os.remove(pdf_path)
 
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
@@ -80,4 +94,3 @@ app.add_handler(MessageHandler(filters.Document.ALL, convert))
 
 print("BOT STARTED")
 app.run_polling()
-
