@@ -3,7 +3,7 @@ import subprocess
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"
+TOKEN = os.environ.get("8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0")  # ضع توكن البوت في Environment Variable
 
 DOWNLOAD_DIR = "downloads"
 OUTPUT_DIR = "output"
@@ -16,75 +16,18 @@ ALLOWED = ["ppt","pptx","doc","docx","xls","xlsx","odt","odp"]
 WELCOME = """
 📄 مرحباً بك في بوت تحويل الملفات إلى PDF
 
-هذا البوت يقوم بتحويل ملفات:
+أرسل أي ملف من الصيغ التالية:
+PPT, PPTX, DOC, DOCX, XLS, XLSX, ODT, ODP
 
-• PowerPoint
-• Word
-• Excel
-• OpenDocument
-
-إلى ملف PDF مع الحفاظ على:
-✔ الألوان
-✔ الخطوط
-✔ التنسيق
-
-━━━━━━━━━━━━━━━
-
-📌 طريقة الاستخدام
-
-1️⃣ أرسل الملف مباشرة للبوت  
-2️⃣ انتظر عدة ثواني  
-3️⃣ سيصلك ملف PDF جاهز
-
-━━━━━━━━━━━━━━━
-
-📂 الصيغ المدعومة
-
-ppt  
-pptx  
-doc  
-docx  
-xls  
-xlsx  
-odt  
-odp  
-
-━━━━━━━━━━━━━━━
-
-⚠️ ملاحظات
-
-• الحد الأقصى للحجم يعتمد على تيليجرام  
-• الملفات يتم حذفها تلقائياً بعد التحويل  
-
-━━━━━━━━━━━━━━━
-
-🚀 أرسل ملفك الآن
+وسيتم تحويله مع الحفاظ على الألوان والخطوط.
 """
 
 HELP = """
-ℹ️ تعليمات استخدام البوت
+ℹ️ تعليمات:
 
-الخطوات:
-
-1️⃣ أرسل أي ملف من الصيغ المدعومة  
-2️⃣ سيقوم البوت بتحويله إلى PDF  
-3️⃣ سيتم إرسال الملف الناتج لك
-
-الأوامر المتاحة:
-
-/start - رسالة الترحيب  
-/help - عرض التعليمات
-
-الصيغ المدعومة:
-
-PPT
-PPTX
-DOC
-DOCX
-XLS
-XLSX
-ODT
-ODP
+1. أرسل الملف مباشرة للبوت
+2. انتظر قليلاً
+3. استلم ملف PDF المحول
 """
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,7 +49,6 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ جاري تحميل الملف...")
 
     file = await doc.get_file()
-
     input_path = os.path.join(DOWNLOAD_DIR, name)
     await file.download_to_drive(input_path)
 
@@ -124,23 +66,17 @@ async def convert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
 
     if os.path.exists(pdf_path):
-
         await update.message.reply_text("📤 تم التحويل بنجاح. جاري الإرسال...")
-
         await update.message.reply_document(open(pdf_path,"rb"))
-
         os.remove(input_path)
         os.remove(pdf_path)
-
     else:
         await update.message.reply_text("❌ حدث خطأ أثناء التحويل")
 
 app = ApplicationBuilder().token(TOKEN).build()
-
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_cmd))
 app.add_handler(MessageHandler(filters.Document.ALL, convert))
 
 print("BOT STARTED")
-
 app.run_polling()
