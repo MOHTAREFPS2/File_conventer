@@ -3,7 +3,7 @@ import subprocess
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.environ.get("8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0")  # ضع توكن البوت في Environment Variable
+TOKEN ="8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"  # ضع توكن البوت في Environment Variable
 
 DOWNLOAD_DIR = "downloads"
 OUTPUT_DIR = "output"
@@ -94,3 +94,4 @@ app.add_handler(MessageHandler(filters.Document.ALL, convert))
 
 print("BOT STARTED")
 app.run_polling()
+
