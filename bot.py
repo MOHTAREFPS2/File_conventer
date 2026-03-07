@@ -1,206 +1,275 @@
-import os
-import asyncio
-import uuid
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pypdf import PdfReader, PdfWriter
+import os
+import time
+import re
+import subprocess
+import sqlite3
+import hashlib
+from datetime import datetime, timedelta
 
-TOKEN = "8792450275:AAFhitrzTCcgqh6PDYq0uu-YyTp0fuBFIy0"
+# ضع توكن البوت الخاص بك هنا
+TOKEN = "8792450275:AAH8GiaNoIySkJHDKQ4R6kLVQQ20qLedLos"
+bot = telebot.TeleBot(TOKEN)
 
-DOWNLOAD_DIR = "downloads"
-OUTPUT_DIR = "output"
+# قاموس لحفظ حالة كل مستخدم لتنظيم الخطوات
+user_data = {}
 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# إعداد قاعدة البيانات لحفظ الملفات المحولة
+def init_db():
+    conn = sqlite3.connect('bot_cache.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS converted_files
+                 (file_hash TEXT PRIMARY KEY, pdf_file_id TEXT, last_used TIMESTAMP)''')
+    conn.commit()
+    conn.close()
 
-ALLOWED = ["ppt", "pptx", "doc", "docx", "xls", "xlsx", "odt", "odp"]
-MAX_FILE_SIZE = 20 * 1024 * 1024
+init_db()
 
-WELCOME = """
-<b>📄 مرحباً بك في بوت إدارة وتحويل الملفات</b>
+# دالة لإنشاء بصمة رقمية للملف
+def get_file_hash(filepath):
+    hasher = hashlib.sha256()
+    with open(filepath, 'rb') as afile:
+        buf = afile.read()
+        hasher.update(buf)
+    return hasher.hexdigest()
 
-أرسل أي ملف وسيظهر لك زر لاختيار الإجراء المناسب.
-"""
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(WELCOME, parse_mode='HTML')
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    name = doc.file_name
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    markup = InlineKeyboardMarkup(row_width=1)
     
-    if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text("<b>❌ حجم الملف يتجاوز الحد الأقصى (20 ميجابايت).</b>", parse_mode='HTML')
+    btn1 = InlineKeyboardButton("تحويل ملف Office إلى PDF", callback_data="office_to_pdf",style="success")
+    btn2 = InlineKeyboardButton("استخراج النصوص من ملف PDF", callback_data="extract_text",style="primary")
+    btn3 = InlineKeyboardButton("قص صفحات محددة من ملفات PDF", callback_data="crop_pdf",style="danger")
+    
+    markup.add(btn1, btn2, btn3)
+    bot.send_message(message.chat.id, "أهلاً بك!\nاختر إحدى الخدمات الأكاديمية التالية:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    chat_id = call.message.chat.id
+    action = call.data
+    
+    user_data[chat_id] = {'action': action}
+    
+    if action == "office_to_pdf":
+        msg = bot.send_message(chat_id, "يرجى إرسال ملف Office (Word, PowerPoint, Excel) للتحويل...")
+        bot.register_next_step_handler(msg, process_file_upload)
+        
+    elif action in ["extract_text", "crop_pdf"]:
+        caption = "ملاحظة: يجب على الطالب ان يعتمد على ترقيم برنامج الPDF الذي يستخدمه و ليس على رقم صفحة الملف نفسه"
+        
+        try:
+            with open("note.jpg", "rb") as photo:
+                bot.send_photo(chat_id, photo, caption=caption)
+        except FileNotFoundError:
+            bot.send_message(chat_id, f"[تنبيه: صورة note.jpg غير موجودة في السيرفر]\n\n{caption}")
+            
+        msg = bot.send_message(chat_id, "يرجى إرسال ملف الـ PDF الآن:")
+        bot.register_next_step_handler(msg, process_file_upload)
+
+def process_file_upload(message):
+    chat_id = message.chat.id
+    
+    if not message.document:
+        msg = bot.send_message(chat_id, "الرجاء إرسال ملف صالح كـ Document.")
+        bot.register_next_step_handler(msg, process_file_upload)
         return
 
-    if not name or "." not in name:
-        await update.message.reply_text("<b>❌ صيغة الملف غير معروفة.</b>", parse_mode='HTML')
+    # حد أقصى 20 ميجابايت لحماية موارد السيرفر ومراعاة قيود تيليجرام
+    file_size = message.document.file_size
+    limit_mb = 50
+    if file_size > limit_mb * 1024 * 1024:
+        bot.send_message(chat_id, f"عذراً، حجم الملف يتجاوز الحد المسموح به ({limit_mb}MB).\nملاحظة: تم وضع هذا الحد بسبب حدود الموارد.")
         return
-        
-    ext = name.split(".")[-1].lower()
 
-    if ext == "pdf":
-        keyboard = [
-            [
-                InlineKeyboardButton("🔴 قص الصفحات", callback_data="btn_cut"),
-                InlineKeyboardButton("🟢 إستخراج النصوص", callback_data="btn_extract")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("<b>اختر الإجراء المطلوب لهذا الملف (PDF):</b>", reply_markup=reply_markup, reply_to_message_id=update.message.message_id, parse_mode='HTML')
+    action = user_data.get(chat_id, {}).get('action')
+    
+    bot.send_message(chat_id, "جاري تحميل الملف، يرجى الانتظار...")
+    file_info = bot.get_file(message.document.file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
+    
+    original_ext = os.path.splitext(message.document.file_name)[1].lower()
+    local_filename = f"file_{chat_id}_{message.message_id}{original_ext}"
+    
+    with open(local_filename, 'wb') as new_file:
+        new_file.write(downloaded_file)
         
-    elif ext in ALLOWED:
-        keyboard = [[InlineKeyboardButton("🔵 تحويل إلى PDF", callback_data="btn_convert")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("<b>الملف جاهز للتحويل:</b>", reply_markup=reply_markup, reply_to_message_id=update.message.message_id, parse_mode='HTML')
+    user_data[chat_id]['file_path'] = local_filename
+
+    if action == "office_to_pdf":
+        convert_office_to_pdf(chat_id, local_filename)
     else:
-        await update.message.reply_text("<b>❌ هذه الصيغة غير مدعومة.</b>", parse_mode='HTML')
+        msg = bot.send_message(chat_id, "تم استلام الملف بنجاح.\nيرجى كتابة نطاق الصفحات بالصيغة التالية (مثال: من 1 الى 10):")
+        bot.register_next_step_handler(msg, process_page_range)
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+def process_page_range(message):
+    chat_id = message.chat.id
+    text = message.text.strip()
     
-    action = query.data
-    original_msg = query.message.reply_to_message
-
-    if not original_msg or not original_msg.document:
-        await query.edit_message_text("<b>❌ تعذر العثور على الملف الأصلي. يرجى إرساله مجدداً.</b>", parse_mode='HTML')
+    pattern = r"^من\s+(\d+)\s+(الى|إلى)\s+(\d+)$"
+    match = re.search(pattern, text)
+    
+    if not match:
+        msg = bot.send_message(chat_id, "صيغة غير صحيحة! يرجى الكتابة بالضبط هكذا: من 1 الى 10")
+        bot.register_next_step_handler(msg, process_page_range)
         return
-
-    doc = original_msg.document
-    name = doc.file_name
-
-    if action == "btn_convert":
-        await convert_process(query, doc, name)
-    elif action == "btn_extract":
-        await extract_process(query, doc)
-    elif action == "btn_cut":
-        await query.edit_message_text("<b>✂️ لقص هذا الملف، قم بالرد (Reply) على الملف الأصلي واكتب الأمر بهذا الشكل:</b>\n\n<code>/cut 1-5</code>\n<i>(لتحديد الصفحات من 1 إلى 5)</i>", parse_mode='HTML')
-
-async def convert_process(query, doc, name):
-    await query.edit_message_text("<b>⚙️ جاري التحويل إلى PDF... يرجى الانتظار.</b>", parse_mode='HTML')
-    input_path = ""
-    pdf_path = ""
+        
+    start_page = int(match.group(1))
+    end_page = int(match.group(3))
     
-    try:
-        file = await doc.get_file()
-        unique_id = str(uuid.uuid4().hex)[:8]
-        unique_name = f"{unique_id}_{name}"
-        input_path = os.path.join(DOWNLOAD_DIR, unique_name)
+    if start_page > end_page or start_page < 1:
+        msg = bot.send_message(chat_id, "أرقام الصفحات غير منطقية. حاول مرة أخرى:")
+        bot.register_next_step_handler(msg, process_page_range)
+        return
         
-        await file.download_to_drive(input_path)
+    action = user_data.get(chat_id, {}).get('action')
+    file_path = user_data.get(chat_id, {}).get('file_path')
+    
+    if action == "extract_text":
+        extract_pdf_text(chat_id, file_path, start_page, end_page)
+    elif action == "crop_pdf":
+        crop_pdf_pages(chat_id, file_path, start_page, end_page)
 
-        process = await asyncio.create_subprocess_exec(
-            "soffice", "--headless", "--convert-to", "pdf", "--outdir", OUTPUT_DIR, input_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-
-        if process.returncode != 0:
-            await query.edit_message_text("<b>❌ فشل التحويل. تأكد من أن الملف غير تالف.</b>", parse_mode='HTML')
-            return
-
-        pdf_name = unique_name.rsplit(".", 1)[0] + ".pdf"
-        pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
-        
-        # للحفاظ على الاسم الأصلي تماماً كما طلبت
-        original_final_name = name.rsplit(".", 1)[0] + ".pdf"
-
-        if os.path.exists(pdf_path):
-            await query.edit_message_text("<b>📤 تم التحويل بنجاح! جاري الإرسال...</b>", parse_mode='HTML')
-            with open(pdf_path, 'rb') as pdf_file:
-                await query.message.reply_document(document=pdf_file, filename=original_final_name)
-            await query.message.delete()
-        else:
-            await query.edit_message_text("<b>❌ حدث خطأ: لم يتم العثور على الملف النهائي.</b>", parse_mode='HTML')
-
-    except Exception as e:
-         await query.edit_message_text(f"<b>❌ خطأ غير متوقع:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
-    finally:
-        if input_path and os.path.exists(input_path): os.remove(input_path)
-        if pdf_path and os.path.exists(pdf_path): os.remove(pdf_path)
-
-async def extract_process(query, doc):
-    await query.edit_message_text("<b>📝 جاري قراءة الملف واستخراج النصوص...</b>", parse_mode='HTML')
-    input_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4().hex}.pdf")
-
+def extract_pdf_text(chat_id, file_path, start_page, end_page):
+    bot.send_message(chat_id, "جاري استخراج النصوص (قد يستغرق الأمر بعض الوقت لتقليل الضغط)...")
     try:
-        file = await doc.get_file()
-        await file.download_to_drive(input_path)
-
-        reader = PdfReader(input_path)
+        reader = PdfReader(file_path)
+        total_pages = len(reader.pages)
+        
+        if end_page > total_pages:
+            end_page = total_pages
+            
         extracted_text = ""
-        for i, page in enumerate(reader.pages):
+        pages_processed = 0
+        
+        start_idx = start_page - 1
+        end_idx = end_page - 1
+        
+        for i, page_num in enumerate(range(start_idx, end_idx + 1)):
+            page = reader.pages[page_num]
             text = page.extract_text()
-            if text and text.strip():
-                extracted_text += f"\n<b>--- صفحة {i+1} ---</b>\n{text}\n"
-
-        if not extracted_text.strip():
-            await query.edit_message_text("<b>⚠️ الملف لا يحتوي على نصوص قابلة للاستخراج (قد يكون صوراً ممسوحة ضوئياً).</b>", parse_mode='HTML')
-            return
-
-        await query.edit_message_text("<b>✅ تم استخراج النص بنجاح:</b>", parse_mode='HTML')
+            if text:
+                extracted_text += f"\n--- صفحة {page_num + 1} ---\n{text}\n"
+                
+            pages_processed += 1
+            
+            if pages_processed % 5 == 0 and page_num != end_idx:
+                time.sleep(3)
+                
+        txt_filename = f"extracted_{chat_id}.txt"
+        with open(txt_filename, "w", encoding="utf-8") as txt_file:
+            txt_file.write(extracted_text)
+            
+        with open(txt_filename, "rb") as final_file:
+            bot.send_document(chat_id, final_file, caption="تم استخراج النصوص بنجاح.")
+            
+        os.remove(txt_filename)
         
-        chunk_size = 3500
-        for i in range(0, len(extracted_text), chunk_size):
-            await query.message.reply_text(f"<code>{extracted_text[i:i+chunk_size]}</code>", parse_mode='HTML')
-
     except Exception as e:
-        await query.edit_message_text(f"<b>❌ حدث خطأ أثناء الاستخراج:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
+        bot.send_message(chat_id, "حدث خطأ أثناء معالجة الملف.")
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-async def cut_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message or not update.message.reply_to_message.document:
-        await update.message.reply_text("<b>❌ الرجاء إرسال أمر القص كرد (Reply) على ملف PDF المطلوب.</b>", parse_mode='HTML')
-        return
-        
-    doc = update.message.reply_to_message.document
-    command_text = update.message.text.replace("/cut", "").strip()
+def crop_pdf_pages(chat_id, file_path, start_page, end_page):
+    bot.send_message(chat_id, "جاري قص الصفحات...")
     try:
-        start_page, end_page = map(int, command_text.split("-"))
-    except:
-        await update.message.reply_text("<b>❌ صيغة خاطئة.</b>\nالاستخدام الصحيح: <code>/cut 1-5</code>", parse_mode='HTML')
-        return
-
-    status_msg = await update.message.reply_text("<b>✂️ جاري قص الملف...</b>", parse_mode='HTML')
-    input_path = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4().hex}.pdf")
-    output_path = os.path.join(OUTPUT_DIR, f"Cut_{doc.file_name}")
-
-    try:
-        file = await doc.get_file()
-        await file.download_to_drive(input_path)
-
-        reader = PdfReader(input_path)
+        reader = PdfReader(file_path)
         writer = PdfWriter()
         total_pages = len(reader.pages)
-
-        if start_page < 1 or end_page > total_pages or start_page > end_page:
-            await status_msg.edit_text(f"<b>❌ نطاق الصفحات غير صحيح.</b>\nالملف يحتوي على {total_pages} صفحة.", parse_mode='HTML')
-            return
-
-        for i in range(start_page - 1, end_page):
-            writer.add_page(reader.pages[i])
-
-        with open(output_path, "wb") as f_out:
-            writer.write(f_out)
-
-        with open(output_path, "rb") as f_send:
-            await update.message.reply_document(document=f_send, filename=doc.file_name) # نفس الاسم الأصلي
-        await status_msg.delete()
-
+        
+        if end_page > total_pages:
+            end_page = total_pages
+            
+        start_idx = start_page - 1
+        end_idx = end_page - 1
+        
+        for page_num in range(start_idx, end_idx + 1):
+            writer.add_page(reader.pages[page_num])
+            
+        output_filename = f"cropped_{chat_id}.pdf"
+        with open(output_filename, "wb") as output_pdf:
+            writer.write(output_pdf)
+            
+        with open(output_filename, "rb") as final_pdf:
+            bot.send_document(chat_id, final_pdf, caption=f"تم قص الصفحات من {start_page} إلى {end_page}.")
+            
+        os.remove(output_filename)
+        
     except Exception as e:
-        await status_msg.edit_text(f"<b>❌ حدث خطأ أثناء القص:</b>\n<code>{str(e)}</code>", parse_mode='HTML')
+        bot.send_message(chat_id, "حدث خطأ أثناء قص الملف.")
     finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# معرف المجموعة التي أنشأتها (يجب أن يبدأ بـ @)
+GROUP_USERNAME = "@file_of_conventor_bot"
+
+def convert_office_to_pdf(chat_id, file_path):
+    file_hash = get_file_hash(file_path)
+    
+    conn = sqlite3.connect('bot_cache.db')
+    c = conn.cursor()
+    c.execute("SELECT pdf_file_id FROM converted_files WHERE file_hash = ?", (file_hash,))
+    result = c.fetchone()
+    
+    if result:
+        # الملف موجود مسبقاً
+        pdf_file_id = result[0]
+        bot.send_message(chat_id, "تم العثور على الملف مسبقاً! جاري إرساله فوراً...")
+        try:
+            bot.send_document(chat_id, pdf_file_id, caption="تم الإرسال بنجاح✅.")
+            # تحديث تاريخ الاستخدام (اختياري الآن ولكن مفيد للإحصائيات)
+            c.execute("UPDATE converted_files SET last_used = ? WHERE file_hash = ?", (datetime.now(), file_hash))
+            conn.commit()
+            
+            conn.close()
+            os.remove(file_path)
+            return
+            
+        except Exception as e:
+            # إذا قمت أنت بحذف الملف من المجموعة، سيتم تنفيذ هذا الجزء
+            c.execute("DELETE FROM converted_files WHERE file_hash = ?", (file_hash,))
+            conn.commit()
+            # سيتجاهل الخطأ ويكمل لعملية التحويل من جديد
+            
+    bot.send_message(chat_id, "جاري التحويل... قد تستغرق العملية بضع ثوانٍ.")
+    try:
+        output_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+        command = ['libreoffice', '--headless', '--convert-to', 'pdf', file_path, '--outdir', output_dir]
+        subprocess.run(command, check=True)
+        
+        pdf_filename = os.path.splitext(file_path)[0] + ".pdf"
+        
+        if os.path.exists(pdf_filename):
+            with open(pdf_filename, "rb") as pdf_file:
+                # 1. إرسال الملف إلى المجموعة أولاً لضمان حفظه
+                group_msg = bot.send_document(GROUP_USERNAME, pdf_file, caption=f"نسخة محفوظة\nبصمة الملف: {file_hash}")
+                
+                # 2. أخذ المعرف السري الآمن من رسالة المجموعة وحفظه في قاعدة البيانات
+                saved_file_id = group_msg.document.file_id
+                c.execute("INSERT OR REPLACE INTO converted_files (file_hash, pdf_file_id, last_used) VALUES (?, ?, ?)",
+                          (file_hash, saved_file_id, datetime.now()))
+                conn.commit()
+                
+                # 3. إرسال نفس الملف للطالب بسرعة فائقة
+                bot.send_document(chat_id, saved_file_id, caption="تم تحويل الملف بنجاح.")
+                
+            os.remove(pdf_filename)
+        else:
+            bot.send_message(chat_id, "فشل التحويل. تأكد من أن الملف سليم.")
+            
+    except Exception as e:
+        bot.send_message(chat_id, "حدث خطأ أثناء التحويل. يرجى المحاولة لاحقاً.")
+    finally:
+        conn.close()
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# ملاحظة: يمكنك حذف دالة cleanup_old_cache من الكود القديم لأنك لن تحتاجها بعد الآن.
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cut", cut_pdf))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(CallbackQueryHandler(button_callback))
-
-    print("BOT STARTED WITH BUTTONS!")
-    app.run_polling()
+    print("Bot is running...")
+    bot.infinity_polling()
