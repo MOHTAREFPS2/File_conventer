@@ -1,9 +1,0 @@
-[phases.setup]
-packages = ["libreoffice", "fonts-dejavu", "fonts-liberation"]
-
-[phases.install]
-# pip install
-cmds = ["pip install -r requirements.txt"]
-
-[phases.build]
-# لا شيء خاص، البوت سيبدأ عبر Procfile
