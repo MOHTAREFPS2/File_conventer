@@ -12,7 +12,7 @@ from PIL import Image
 from datetime import datetime
 
 # ================= الإعدادات الأساسية =================
-TOKEN = "8628116455:AAFIP2HFgxHm_HiXg6cBnPp7jaJXqr5NA4s"
+TOKEN = "8792450275:AAH8GiaNoIySkJHDKQ4R6kLVQQ20qLedLos"
 GROUP_USERNAME = "@file_of_conventor_bot"
 ADMIN_ID = 5531978627
 
