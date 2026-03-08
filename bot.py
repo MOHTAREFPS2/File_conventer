@@ -12,7 +12,7 @@ from PIL import Image
 from datetime import datetime
 
 # ================= الإعدادات الأساسية =================
-TOKEN = "8792450275:AAH8GiaNoIySkJHDKQ4R6kLVQQ20qLedLos"
+TOKEN = "8628116455:AAFIP2HFgxHm_HiXg6cBnPp7jaJXqr5NA4s"
 GROUP_USERNAME = "@file_of_conventor_bot"
 ADMIN_ID = 5531978627
 
@@ -632,7 +632,7 @@ def convert_office_to_pdf(chat_id, file_path, msg_id):
             pdf_file_id = result[0]
             bot.edit_message_text("🚀 تم العثور على الملف مسبقاً! جاري إرساله...\n[■■■■■■■■■■] 100%", chat_id, msg_id)
             try:
-                bot.send_document(chat_id, pdf_file_id, caption="✅ تم الإرسال بلمح البصر (نسخة محفوظة).", reply_markup=file_action_markup())
+                bot.send_document(chat_id, pdf_file_id, caption="✅ تم الإرسال بلمح البصر (نسخة محفوظة).", reply_markup=file_result_markup())
                 c.execute("UPDATE converted_files SET last_used = ? WHERE file_hash = ?", (datetime.now(), file_hash))
                 conn.commit()
                 return
@@ -646,7 +646,8 @@ def convert_office_to_pdf(chat_id, file_path, msg_id):
             ['libreoffice', '--headless', '--convert-to', 'pdf', file_path, '--outdir', output_dir],
             check=True, timeout=120
         )
-        pdf_filename = os.path.splitext(file_path)[0] + ".pdf"
+        final_name = user_data.get(chat_id, {}).get('final_name') or f"converted_{chat_id}.PDF"
+        out_file = final_name if final_name.endswith('.PDF') else final_name + '.PDF'
 
         if not os.path.exists(pdf_filename):
             bot.send_message(chat_id, "⚠️ فشل التحويل. تأكد من أن الملف سليم.")
