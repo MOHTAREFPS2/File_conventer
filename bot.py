@@ -646,8 +646,7 @@ def convert_office_to_pdf(chat_id, file_path, msg_id):
             ['libreoffice', '--headless', '--convert-to', 'pdf', file_path, '--outdir', output_dir],
             check=True, timeout=120
         )
-        final_name = user_data.get(chat_id, {}).get('final_name') or f"converted_{chat_id}.PDF"
-        out_file = final_name if final_name.endswith('.PDF') else final_name + '.PDF'
+        out_file = user_data.get(chat_id, {}).get(f"converted_{chat_id}.PDF")
 
         if not os.path.exists(pdf_filename):
             bot.send_message(chat_id, "⚠️ فشل التحويل. تأكد من أن الملف سليم.")
