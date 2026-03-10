@@ -625,7 +625,9 @@ def convert_office_to_pdf(chat_id, file_path, msg_id):
     file_hash = get_file_hash(file_path)
     conn = sqlite3.connect('bot_cache.db')
     c    = conn.cursor()
+    
     try:
+        # 1. التحقق من وجود الملف مسبقاً في قاعدة البيانات (لتسريع العملية)
         c.execute("SELECT pdf_file_id FROM converted_files WHERE file_hash = ?", (file_hash,))
         result = c.fetchone()
         if result:
@@ -635,55 +637,84 @@ def convert_office_to_pdf(chat_id, file_path, msg_id):
                 bot.send_document(chat_id, pdf_file_id, caption="✅ تم الإرسال بلمح البصر (نسخة محفوظة).", reply_markup=file_result_markup())
                 c.execute("UPDATE converted_files SET last_used = ? WHERE file_hash = ?", (datetime.now(), file_hash))
                 conn.commit()
-                return
+                return # إنهاء الدالة لأن الملف تم إرساله بنجاح
             except Exception:
+                # إذا فشل الإرسال (مثلاً الملف محذوف من سيرفرات تيليجرام)، نحذفه من القاعدة ونكمل التحويل
                 c.execute("DELETE FROM converted_files WHERE file_hash = ?", (file_hash,))
                 conn.commit()
 
+        # 2. بدء عملية التحويل باستخدام LibreOffice
         bot.edit_message_text("⚙️ جاري تحويل الصيغة...\n[■■■■■■□□□□] 60%", chat_id, msg_id)
         output_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+        
+        # تنفيذ أمر التحويل في النظام
         subprocess.run(
             ['libreoffice', '--headless', '--convert-to', 'pdf', file_path, '--outdir', output_dir],
-            check=True, timeout=120
+            check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        out_file = user_data.get(chat_id, {}).get(f"converted_{chat_id}.PDF")
 
+        # 3. تحديد مسار واسم ملف الـ PDF الناتج
+        # LibreOffice يقوم بإنشاء ملف بنفس اسم الأصل ولكن بصيغة .pdf
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        pdf_filename = os.path.join(output_dir, f"{base_name}.pdf")
+
+        # التحقق من نجاح عملية التحويل وتواجد الملف
         if not os.path.exists(pdf_filename):
-            bot.send_message(chat_id, "⚠️ فشل التحويل. تأكد من أن الملف سليم.")
+            bot.edit_message_text("⚠️ فشل التحويل. تأكد من أن الملف سليم.", chat_id, msg_id)
             return
 
         bot.edit_message_text("✅ اكتمل التحويل! جاري رفع الملف...\n[■■■■■■■■■■] 100%", chat_id, msg_id)
 
-        # استخدام الاسم المخصص إن وُجد
+        # 4. التعامل مع تغيير اسم الملف (إذا طلب المستخدم ذلك قبل التحويل)
         final_name = user_data.get(chat_id, {}).get('final_name')
+        file_to_send = pdf_filename # المسار الافتراضي للملف الذي سيتم إرساله
 
-        # استخدام الاسم المخصص إن وُجد
-        final_name = user_data.get(chat_id, {}).get('final_name')
+        if final_name:
+            # التأكد من أن الاسم الجديد ينتهي بصيغة .pdf
+            if not final_name.lower().endswith('.pdf'):
+                final_name += '.pdf'
+            
+            # إنشاء مسار جديد بالاسم المخصص وإعادة تسمية الملف محلياً
+            custom_path = os.path.join(output_dir, final_name)
+            os.rename(pdf_filename, custom_path)
+            file_to_send = custom_path # تحديث المسار ليتم إرسال الملف بالاسم الجديد
 
-        with open(pdf_filename, "rb") as pdf_file:
+        # 5. رفع الملف إلى القناة الخاصة لحفظه (Caching)
+        with open(file_to_send, "rb") as pdf_file:
             group_msg     = bot.send_document(GROUP_USERNAME, pdf_file, caption=f"نسخة محفوظة | بصمة: {file_hash}")
             saved_file_id = group_msg.document.file_id
 
+        # تحديث قاعدة البيانات بمعلومات الملف الجديد
         c.execute(
             "INSERT OR REPLACE INTO converted_files (file_hash, pdf_file_id, last_used) VALUES (?, ?, ?)",
             (file_hash, saved_file_id, datetime.now())
         )
         conn.commit()
 
-        caption = f"📄 تم تحويل الملف بنجاح."
+        # 6. إرسال الملف النهائي للمستخدم
+        caption = "📄 تم تحويل الملف بنجاح."
         if final_name:
             caption += f"\nالاسم: <b>{final_name}</b>"
 
-        bot.send_document(chat_id, saved_file_id, caption=caption, reply_markup=file_action_markup())
-        os.remove(pdf_filename)
+        bot.send_document(chat_id, saved_file_id, caption=caption, reply_markup=file_result_markup())
 
     except subprocess.TimeoutExpired:
-        bot.send_message(chat_id, "⚠️ انتهت مهلة التحويل. يرجى المحاولة بملف أصغر.")
+        bot.edit_message_text("⚠️ انتهت مهلة التحويل. يرجى المحاولة بملف أصغر.", chat_id, msg_id)
     except Exception as e:
         print(f"[convert_error] {e}")
-        bot.send_message(chat_id, "⚠️ حدث خطأ أثناء التحويل. يرجى المحاولة لاحقاً.")
+        bot.edit_message_text("⚠️ حدث خطأ أثناء التحويل. يرجى المحاولة لاحقاً.", chat_id, msg_id)
     finally:
         conn.close()
+        # التنظيف: حذف الملف الأصلي وملفات الـ PDF المؤقتة من السيرفر لتوفير المساحة
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        if 'file_to_send' in locals() and os.path.exists(file_to_send):
+            os.remove(file_to_send)
+        elif 'pdf_filename' in locals() and os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
+        
+        user_data.pop(chat_id, None)
+
         if os.path.exists(file_path):
             os.remove(file_path)
         user_data.pop(chat_id, None)
